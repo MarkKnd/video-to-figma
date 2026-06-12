@@ -1,0 +1,5 @@
+backend/_jobs/
+**/__pycache__/
+*.pyc
+.DS_Store
+*.log

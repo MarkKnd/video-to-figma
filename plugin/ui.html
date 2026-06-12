@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mut:#8a8a8a; --line:#e6e6e6; --accent:#0d99ff; }
+  * { box-sizing: border-box; }
+  body {
+    font: 12px -apple-system, "Inter", sans-serif;
+    color: var(--fg); margin: 0; padding: 14px;
+  }
+  h1 { font-size: 13px; margin: 0 0 10px; }
+  label { display:block; font-weight:600; margin: 12px 0 4px; }
+  input[type=text], select, input[type=number] {
+    width: 100%; padding: 8px; border:1px solid var(--line);
+    border-radius: 6px; font: inherit;
+  }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  button {
+    width:100%; padding:9px; border:0; border-radius:6px;
+    background: var(--accent); color:#fff; font-weight:600; cursor:pointer;
+    margin-top: 12px;
+  }
+  button.secondary { background:#f0f0f0; color:#1a1a1a; }
+  button:disabled { opacity:.5; cursor:default; }
+  .muted { color: var(--mut); }
+  .card { border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:10px; }
+  .hidden { display:none; }
+  .pill { display:inline-block; background:#f2f2f2; border-radius:10px; padding:2px 8px; margin:2px 2px 0 0; }
+  #status { margin-top:12px; white-space:pre-wrap; }
+  .err { color:#d4373e; }
+  .ok { color:#1a9d4b; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { margin:0; border-radius:0; background:#fff; color:#1a1a1a; }
+  .seg button.active { background:var(--accent); color:#fff; }
+</style>
+</head>
+<body>
+  <h1>Video → Figma Screenshots</h1>
+
+  <label>Video link</label>
+  <input id="url" type="text" placeholder="https://x.com/… · youtube · vimeo …" />
+  <button id="analyzeBtn">Analyze</button>
+
+  <div id="settings" class="card hidden">
+    <div id="meta" class="muted"></div>
+
+    <label>Capture mode</label>
+    <div class="seg" id="modeSeg">
+      <button data-mode="scene" class="active">Scene cuts</button>
+      <button data-mode="interval">Every N seconds</button>
+    </div>
+
+    <div id="intervalOpts" class="hidden">
+      <label>Interval (seconds)</label>
+      <input id="interval" type="number" min="0.2" step="0.2" />
+    </div>
+
+    <label id="countLabel">Number of screenshots</label>
+    <input id="count" type="number" min="1" max="300" />
+
+    <label>Quality</label>
+    <select id="quality"></select>
+
+    <label>Export to page</label>
+    <select id="page"></select>
+    <input id="newPage" type="text" placeholder="…or type a new page name" />
+
+    <button id="exportBtn">Export to Figma</button>
+  </div>
+
+  <div id="status"></div>
+
+<script>
+// ⬇️ After deploying to Render, replace this with your service URL,
+//    e.g. "https://video-to-figma.onrender.com". Use http://localhost:8765
+//    while developing locally.
+const API = "https://YOUR-SERVICE.onrender.com";
+let state = { jobId: null, mode: "scene" };
+
+const $ = function (id) { return document.getElementById(id); };
+function show(el, on) { el.classList[on ? "remove" : "add"]("hidden"); }
+function setStatus(html, cls) {
+  $("status").className = cls || "";
+  $("status").innerHTML = html;
+}
+
+function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+// Recompute the screenshot count to match the active mode.
+function recalcCount() {
+  if (state.mode === "interval") {
+    $("countLabel").textContent = "Max screenshots";
+    const iv = parseFloat($("interval").value) || 2;
+    const n = Math.ceil((state.duration || 0) / iv) || 1;
+    $("count").value = clamp(n, 1, 300);
+  } else {
+    $("countLabel").textContent = "Number of screenshots";
+    $("count").value = clamp(state.sceneCount || 1, 1, 300);
+  }
+}
+
+// ---- mode toggle ----
+$("modeSeg").addEventListener("click", function (e) {
+  const b = e.target.closest("button");
+  if (!b) return;
+  state.mode = b.dataset.mode;
+  [].forEach.call($("modeSeg").children, function (c) {
+    c.classList.toggle("active", c === b);
+  });
+  show($("intervalOpts"), state.mode === "interval");
+  recalcCount();
+});
+
+// keep the count in sync when the interval changes (interval mode)
+$("interval").addEventListener("input", function () {
+  if (state.mode === "interval") recalcCount();
+});
+
+// ---- analyze ----
+$("analyzeBtn").addEventListener("click", async function () {
+  const url = $("url").value.trim();
+  if (!url) return;
+  setStatus("Analyzing… downloading a proxy and detecting scenes (can take a minute).");
+  $("analyzeBtn").disabled = true;
+  try {
+    const r = await fetch(API + "/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: url }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "analyze failed");
+    state.jobId = d.job_id;
+    state.duration = d.duration;
+    state.sceneCount = d.scene_count;
+
+    $("meta").innerHTML =
+      "<b>" + esc(d.title) + "</b><br>" +
+      "<span class='pill'>" + d.duration_label + "</span>" +
+      "<span class='pill'>" + (d.width && d.height ? d.width + "×" + d.height : "?") + "</span>" +
+      "<span class='pill'>" + d.scene_count + " scenes</span>";
+
+    $("interval").value = d.recommended_interval;
+    recalcCount();
+
+    const q = $("quality");
+    q.innerHTML = "";
+    (d.qualities || []).forEach(function (h) {
+      const o = document.createElement("option");
+      o.value = h; o.textContent = h + "p";
+      if (h === d.recommended_quality) o.selected = true;
+      q.appendChild(o);
+    });
+
+    show($("settings"), true);
+    setStatus("Ready. Adjust settings and export.", "ok");
+  } catch (e) {
+    setStatus("Error: " + e.message, "err");
+  } finally {
+    $("analyzeBtn").disabled = false;
+  }
+});
+
+// ---- export ----
+$("exportBtn").addEventListener("click", async function () {
+  if (!state.jobId) return;
+  $("exportBtn").disabled = true;
+  setStatus("Extracting frames…");
+  try {
+    const body = {
+      job_id: state.jobId,
+      mode: state.mode,
+      interval_seconds: parseFloat($("interval").value) || 2,
+      quality_height: parseInt($("quality").value, 10) || 1080,
+      max_frames: parseInt($("count").value, 10) || 40,
+    };
+    const r = await fetch(API + "/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "extract failed");
+
+    setStatus("Downloading " + d.count + " frames into Figma…");
+    const frames = [];
+    for (let i = 0; i < d.frames.length; i++) {
+      const fr = d.frames[i];
+      const img = await fetch(fr.url);
+      const buf = await img.arrayBuffer();
+      frames.push({
+        index: fr.index,
+        label: fr.label,
+        bytes: new Uint8Array(buf),
+      });
+      setStatus("Fetched " + (i + 1) + " / " + d.frames.length + " frames…");
+    }
+
+    const newPage = $("newPage").value.trim();
+    parent.postMessage({
+      pluginMessage: {
+        type: "place",
+        frames: frames,
+        title: d.title,
+        videoUrl: $("url").value.trim(),
+        gap: 40,
+        pageId: newPage ? null : $("page").value,
+        newPageName: newPage || null,
+      },
+    }, "*");
+  } catch (e) {
+    setStatus("Error: " + e.message, "err");
+    $("exportBtn").disabled = false;
+  }
+});
+
+// ---- messages from main thread ----
+window.onmessage = function (event) {
+  const m = event.data.pluginMessage;
+  if (!m) return;
+  if (m.type === "pages") {
+    const sel = $("page");
+    sel.innerHTML = "";
+    m.pages.forEach(function (p) {
+      const o = document.createElement("option");
+      o.value = p.id; o.textContent = p.name;
+      if (p.id === m.current) o.selected = true;
+      sel.appendChild(o);
+    });
+  } else if (m.type === "progress") {
+    setStatus("Placing frame " + m.done + " / " + m.total + " …");
+  } else if (m.type === "done") {
+    let s = "✓ Placed " + m.count + " frames on page “" + m.page + "”.";
+    s += "\nStack width: " + m.totalWidth + "px.";
+    if (m.priorExports > 0)
+      s += "\n⚠︎ " + m.priorExports + " earlier export(s) already on this page.";
+    if (m.duplicates > 0)
+      s += "\n⚠︎ " + m.duplicates + " of them are this same video — possible duplicate.";
+    setStatus(s, "ok");
+    $("exportBtn").disabled = false;
+  } else if (m.type === "error") {
+    setStatus("Error: " + m.message, "err");
+    $("exportBtn").disabled = false;
+  }
+};
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# Render Blueprint. In Render: New + -> Blueprint -> point at this repo.
+# Docker build installs ffmpeg; Python deps come from backend/requirements.txt.
+services:
+  - type: web
+    name: video-to-figma
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # 512MB tiers can OOM during scene detection on larger clips.
+    # 'standard' (2GB) is the safe choice for a public tool; bump if needed.
+    plan: standard
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Frame URLs are built from the request host by default. If you put the
+      # service behind a custom domain, set this to that https URL.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: MAX_DURATION      # max video length in seconds (20 min)
+        value: "1200"
+      - key: HARD_MAX_FRAMES   # absolute cap on screenshots per export
+        value: "60"
+      - key: RATE_LIMIT        # analyze requests per IP per hour
+        value: "20"
+      - key: MAX_CONCURRENCY   # simultaneous heavy jobs
+        value: "2"
+      - key: PROXY_HEIGHT      # resolution used for scene detection
+        value: "480"
+      - key: JOB_TTL           # seconds before a job's frames are deleted
+        value: "1800"
