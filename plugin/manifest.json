@@ -7,7 +7,7 @@
   "editorType": ["figma"],
   "networkAccess": {
     "allowedDomains": [
-      "https://YOUR-SERVICE.onrender.com"
+      "https://video-to-figma.onrender.com"
     ],
     "reasoning": "Connects to the hosted service that downloads the video and extracts frames."
   }

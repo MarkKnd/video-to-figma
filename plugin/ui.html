@@ -73,10 +73,8 @@
   <div id="status"></div>
 
 <script>
-// ⬇️ After deploying to Render, replace this with your service URL,
-//    e.g. "https://video-to-figma.onrender.com". Use http://localhost:8765
-//    while developing locally.
-const API = "https://YOUR-SERVICE.onrender.com";
+// Hosted backend on Render. Use http://localhost:8765 while developing locally.
+const API = "https://video-to-figma.onrender.com";
 let state = { jobId: null, mode: "scene" };
 
 const $ = function (id) { return document.getElementById(id); };
