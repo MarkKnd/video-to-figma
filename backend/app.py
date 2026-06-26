@@ -13,6 +13,7 @@ hard caps on duration / frame count, automatic job cleanup, and frame
 URLs derived from the public request host (HTTPS on Render).
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yt_dlp
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -43,6 +44,7 @@ HARD_MAX_FRAMES = int(os.environ.get("HARD_MAX_FRAMES", "60"))
 JOB_TTL = int(os.environ.get("JOB_TTL", "1800"))            # 30 min
 RATE_LIMIT = int(os.environ.get("RATE_LIMIT", "20"))        # analyze/IP/hour
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "2"))
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "500")) * 1024 * 1024
 
 BASE = Path(__file__).resolve().parent
 JOBS = BASE / "_jobs"
@@ -147,6 +149,31 @@ def _download(url: str, out_tmpl: str, max_height: Optional[int]) -> str:
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         return ydl.prepare_filename(info)
+
+
+def _probe(path: str):
+    """Return (width, height, duration_seconds) for a local video file."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height:format=duration",
+         "-of", "json", path],
+        capture_output=True, text=True,
+    )
+    info = json.loads(out.stdout or "{}")
+    streams = info.get("streams") or []
+    w = int(streams[0].get("width") or 0) if streams else 0
+    h = int(streams[0].get("height") or 0) if streams else 0
+    dur = float((info.get("format") or {}).get("duration") or 0)
+    return w, h, dur
+
+
+def _make_proxy(src: str, out: str, height: int = PROXY_HEIGHT) -> None:
+    """Downscale to a small proxy for fast/low-memory scene detection."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", src, "-vf", f"scale=-2:{height}",
+         "-an", "-preset", "veryfast", out],
+        check=True, capture_output=True,
+    )
 
 
 def _scene_times(video_path: str) -> List[float]:
@@ -320,7 +347,9 @@ def extract(body: ExtractIn, request: Request):
         times = times[::stride][:cap]
 
     want = body.quality_height
-    if want <= PROXY_HEIGHT:
+    if job.get("uploaded"):
+        source = job["source"]            # the uploaded file is the source
+    elif want <= PROXY_HEIGHT:
         source = job["proxy"]
     else:
         source = job.get(f"src_{want}")
@@ -363,6 +392,107 @@ def extract(body: ExtractIn, request: Request):
         "title": job["title"],
         "count": len(frames),
         "frames": frames,
+    }
+
+
+@app.post("/upload")
+def upload(request: Request, file: UploadFile = File(...)):
+    # Sync endpoint: FastAPI runs it in a threadpool, so the blocking
+    # ffmpeg / scene-detection work never jams the event loop.
+    if not _ffmpeg_ok():
+        raise HTTPException(500, "ffmpeg is not installed or not on PATH")
+
+    ip = _client_ip(request)
+    if not _check_rate(ip):
+        raise HTTPException(429, "Rate limit reached. Try again later.")
+
+    _prune_jobs()
+
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = JOBS / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = (Path(file.filename or "video.mp4").suffix or ".mp4").lower()
+    src = job_dir / f"source{ext}"
+
+    # stream to disk with a hard size cap
+    size = 0
+    try:
+        with open(src, "wb") as f:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        413,
+                        f"File too large (limit "
+                        f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+
+    width, height, duration = _probe(str(src))
+    if duration and duration > MAX_DURATION:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(
+            413,
+            f"Video is {int(duration)}s; the limit is {MAX_DURATION}s "
+            f"({MAX_DURATION // 60} min).",
+        )
+
+    # scene detection on a small proxy (cheaper / OOM-safe)
+    if not _sema.acquire(timeout=3):
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(503, "Server busy, please retry in a moment.")
+    try:
+        proxy = job_dir / "proxy.mp4"
+        try:
+            _make_proxy(str(src), str(proxy))
+            detect_on = str(proxy)
+        except Exception:
+            detect_on = str(src)
+        scenes = _scene_times(detect_on)
+    finally:
+        _sema.release()
+
+    title = Path(file.filename or "video").stem or "video"
+    suggested = (scenes if len(scenes) <= HARD_MAX_FRAMES
+                 else scenes[:: max(1, len(scenes) // HARD_MAX_FRAMES)])
+
+    CACHE[job_id] = {
+        "uploaded": True,
+        "source": str(src),
+        "url": None,
+        "title": title,
+        "duration": duration,
+        "scenes": scenes,
+        "width": width,
+        "height": height,
+        "heights": [height] if height else [],
+    }
+
+    return {
+        "job_id": job_id,
+        "title": title,
+        "duration": duration,
+        "duration_label": _ts(duration),
+        "width": width,
+        "height": height,
+        "aspect": (round(width / height, 4) if height else None),
+        "qualities": [height] if height else [],
+        "recommended_quality": height or 1080,
+        "scene_count": len(scenes),
+        "scene_times": scenes,
+        "recommended_mode": "scene",
+        "recommended_count": len(suggested),
+        "recommended_interval": round(duration / max(1, len(suggested)), 2)
+        if duration else 2.0,
+        "max_frames_allowed": HARD_MAX_FRAMES,
+        "uploaded": True,
     }
 
 
