@@ -11,13 +11,17 @@ You only need these 3 files (manifest.json, code.js, ui.html) and the
 5. Open any file in edit mode → **Plugins → Development → Video to Figma Screenshots**.
 
 ## Using it
-- Paste a video link → **Analyze** → pick scene-cuts or every-N-seconds and a
-  quality → choose the page → **Export to Figma**.
-- Screenshots land as a horizontal stack of frames sized to the video's aspect.
+Two ways to start:
+- **Paste link** — works for Vimeo and direct video URLs.
+- **Upload file** — pick a video file from your computer (use this for YouTube
+  or X: download the clip first, then upload it here).
 
-## Known limitation
-YouTube and X currently block downloads from the hosted server's IP, so those
-links may fail with an auth error. Vimeo and many other hosts work. (Fixing
-YouTube/X reliably needs paid proxies — deliberately skipped for now.)
+Then: pick scene-cuts or every-N-seconds → choose the page → **Export to Figma**.
+Screenshots land as a horizontal stack of frames sized to the video's aspect.
+
+## Note
+Pasting a **YouTube or X link** won't work (those sites block the server).
+Just download the clip and use **Upload file** instead. Big files take a little
+while to process.
 
 Questions → Mark.
