@@ -15,7 +15,11 @@ function sendPages() {
   });
 }
 
-sendPages();
+// dynamic-page mode: load pages before touching figma.root.children
+(async function init() {
+  await figma.loadAllPagesAsync();
+  sendPages();
+})();
 
 function resolvePage(msg) {
   if (msg.newPageName) {
@@ -62,7 +66,7 @@ figma.ui.onmessage = async function (msg) {
 
 async function place(msg) {
   const page = resolvePage(msg);
-  figma.currentPage = page;
+  await figma.setCurrentPageAsync(page);
 
   // --- artefact scan (step 7): prior exports + duplicate of this video ---
   const prior = page.children.filter(function (n) {

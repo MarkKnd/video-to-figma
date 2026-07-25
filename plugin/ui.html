@@ -42,6 +42,16 @@
   <div class="seg" id="srcSeg">
     <button data-src="link" class="active">Paste link</button>
     <button data-src="upload">Upload file</button>
+    <button data-src="batch">Batch</button>
+  </div>
+
+  <div id="batchBox" class="hidden">
+    <label>Pre-uploaded jobs (one per line: id|name)</label>
+    <textarea id="batchList" rows="7"
+      style="width:100%;font:inherit;border:1px solid var(--line);border-radius:6px;padding:8px;"></textarea>
+    <label>Interval (seconds)</label>
+    <input id="batchInterval" type="number" min="0.2" step="0.2" value="1" />
+    <button id="batchBtn">Place all storyboards</button>
   </div>
 
   <div id="linkBox">
@@ -139,6 +149,7 @@ $("srcSeg").addEventListener("click", function (e) {
   });
   show($("linkBox"), src === "link");
   show($("uploadBox"), src === "upload");
+  show($("batchBox"), src === "batch");
 });
 
 // Populate the settings panel from an analyze/upload response (shared).
@@ -270,10 +281,57 @@ $("exportBtn").addEventListener("click", async function () {
   }
 });
 
+// ---- batch: place many pre-uploaded jobs as storyboards, one by one ----
+let pendingDone = null;
+$("batchBtn").addEventListener("click", async function () {
+  const lines = $("batchList").value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+  if (!lines.length) { setStatus("Paste job IDs first.", "err"); return; }
+  const iv = parseFloat($("batchInterval").value) || 1;
+  $("batchBtn").disabled = true;
+  let done = 0;
+  for (let k = 0; k < lines.length; k++) {
+    const parts = lines[k].split("|");
+    const jobId = parts[0].trim();
+    const title = (parts[1] || jobId).trim();
+    const tag = "[" + (k + 1) + "/" + lines.length + "] " + title;
+    try {
+      setStatus(tag + ": extracting frames…");
+      const r = await fetch(API + "/extract", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId, mode: "interval", interval_seconds: iv, quality_height: 1080, max_frames: 100 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "extract failed");
+      const frames = [];
+      for (let i = 0; i < d.frames.length; i++) {
+        const img = await fetch(d.frames[i].url);
+        const buf = await img.arrayBuffer();
+        frames.push({ index: d.frames[i].index, label: d.frames[i].label, bytes: new Uint8Array(buf) });
+        if (i % 10 === 0) setStatus(tag + ": fetched " + (i + 1) + "/" + d.frames.length);
+      }
+      setStatus(tag + ": placing " + frames.length + " frames…");
+      await new Promise(function (resolve) {
+        pendingDone = resolve;
+        parent.postMessage({ pluginMessage: {
+          type: "place", frames: frames, title: title, videoUrl: "file:" + title, gap: 40,
+        } }, "*");
+      });
+      done++;
+    } catch (e) {
+      setStatus(tag + " — error: " + e.message, "err");
+    }
+  }
+  setStatus("✓ Done. Placed " + done + "/" + lines.length + " storyboards.", "ok");
+  $("batchBtn").disabled = false;
+});
+
 // ---- messages from main thread ----
 window.onmessage = function (event) {
   const m = event.data.pluginMessage;
   if (!m) return;
+  if ((m.type === "done" || m.type === "error") && pendingDone) {
+    const r = pendingDone; pendingDone = null; r(); return;
+  }
   if (m.type === "pages") {
     const sel = $("page");
     sel.innerHTML = "";

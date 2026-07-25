@@ -1,13 +1,15 @@
 {
   "name": "Video to Figma Screenshots",
-  "id": "video-to-figma-local-tool",
+  "id": "1652423056818091817",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
   "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": [
-      "https://video-to-figma.onrender.com"
+      "https://video-to-figma.onrender.com",
+      "http://localhost:8765"
     ],
     "reasoning": "Connects to the hosted service that downloads the video and extracts frames."
   }
